@@ -1,13 +1,11 @@
 /*
-  .______   .______    __    __   __    __          ___      __    __  .___________.  ______   .___  ___.      ___   .___________. __    ______   .__   __.
-  |   _  \  |   _  \  |  |  |  | |  |  |  |        /   \    |  |  |  | |           | /  __  \  |   \/   |     /   \  |           ||  |  /  __  \  |  \ |  |
-  |  |_)  | |  |_)  | |  |  |  | |  |__|  |       /  ^  \   |  |  |  | `---|  |----`|  |  |  | |  \  /  |    /  ^  \ `---|  |----`|  | |  |  |  | |   \|  |
-  |   _  <  |      /  |  |  |  | |   __   |      /  /_\  \  |  |  |  |     |  |     |  |  |  | |  |\/|  |   /  /_\  \    |  |     |  | |  |  |  | |  . `  |
-  |  |_)  | |  |\  \-.|  `--'  | |  |  |  |     /  _____  \ |  `--'  |     |  |     |  `--'  | |  |  |  |  /  _____  \   |  |     |  | |  `--'  | |  |\   |
-  |______/  | _| `.__| \______/  |__|  |__|    /__/     \__\ \______/      |__|      \______/  |__|  |__| /__/     \__\  |__|     |__|  \______/  |__| \__|
-
-  Thanks much to @corbanmailloux for providing a great framework for implementing flash/fade with HomeAssistant https://github.com/corbanmailloux/esp-mqtt-rgb-led
-  
+ _    _ _     _ _   _____  _____         ___        _                        _   _             
+| |  | | |   (_) | |____ ||____ |       / _ \      | |                      | | (_)            
+| |  | | |__  _| |_    / /    / /_ __  / /_\ \_   _| |_ ___  _ __ ___   __ _| |_ _  ___  _ __  
+| |/\| | '_ \| | __|   \ \    \ \ '__| |  _  | | | | __/ _ \| '_ ` _ \ / _` | __| |/ _ \| '_ \ 
+\  /\  / | | | | |_.___/ /.___/ / |    | | | | |_| | || (_) | | | | | | (_| | |_| | (_) | | | |
+ \/  \/|_| |_|_|\__\____/ \____/|_|    \_| |_/\__,_|\__\___/|_| |_| |_|\__,_|\__|_|\___/|_| |_|
+                                                                                               
   To use this code you will need the following dependancies: 
   
   - Support for the ESP8266 boards. 
@@ -19,7 +17,7 @@
       - PubSubClient
       - ArduinoJSON
 */
-
+#define FASTLED_INTERRUPT_RETRY_COUNT 0
 #include <ArduinoJson.h>
 #include <ESP8266WiFi.h>
 #include <PubSubClient.h>
@@ -28,28 +26,23 @@
 #include <WiFiUdp.h>
 #include <ArduinoOTA.h>
 
-
-
 /************ WIFI and MQTT Information (CHANGE THESE FOR YOUR SETUP) ******************/
-const char* ssid = "YourSSID"; //type your WIFI information inside the quotes
-const char* password = "YourWIFIpassword";
-const char* mqtt_server = "your.MQTT.server.ip";
-const char* mqtt_username = "yourMQTTusername";
-const char* mqtt_password = "yourMQTTpassword";
+const char* ssid = "ssid"; //type your WIFI information inside the quotes
+const char* password = "pw";
+const char* mqtt_server = "ip";
+const char* mqtt_username = "";
+const char* mqtt_password = "";
 const int mqtt_port = 1883;
 
-
-
 /**************************** FOR OTA **************************************************/
-#define SENSORNAME "porch" //change this to whatever you want to call your device
-#define OTApassword "yourOTApassword" //the password you will need to enter to upload remotely via the ArduinoIDE
+#define SENSORNAME "Strip" //change this to whatever you want to call your device
+#define OTApassword "5533" //the password you will need to enter to upload remotely via the ArduinoIDE
 int OTAport = 8266;
 
 
-
 /************* MQTT TOPICS (change these topics as you wish)  **************************/
-const char* light_state_topic = "bruh/porch";
-const char* light_set_topic = "bruh/porch/set";
+const char* light_state_topic = "state";
+const char* light_set_topic = "topic";
 
 const char* on_cmd = "ON";
 const char* off_cmd = "OFF";
@@ -57,20 +50,16 @@ const char* effect = "solid";
 String effectString = "solid";
 String oldeffectString = "solid";
 
-
-
 /****************************************FOR JSON***************************************/
 const int BUFFER_SIZE = JSON_OBJECT_SIZE(10);
 #define MQTT_MAX_PACKET_SIZE 512
 
-
-
 /*********************************** FastLED Defintions ********************************/
-#define NUM_LEDS    186
-#define DATA_PIN    5
+#define NUM_LEDS    150
+#define DATA_PIN    D4
 //#define CLOCK_PIN 5
-#define CHIPSET     WS2811
-#define COLOR_ORDER BRG
+#define CHIPSET     WS2812B
+#define COLOR_ORDER GRB
 
 byte realRed = 0;
 byte realGreen = 0;
@@ -80,7 +69,6 @@ byte red = 255;
 byte green = 255;
 byte blue = 255;
 byte brightness = 255;
-
 
 
 /******************************** GLOBALS for fade/flash *******************************/
@@ -94,6 +82,7 @@ bool inFade = false;
 int loopCount = 0;
 int stepR, stepG, stepB;
 int redVal, grnVal, bluVal;
+bool startup = true;
 
 bool flash = false;
 bool startFlash = false;
@@ -103,8 +92,6 @@ byte flashRed = red;
 byte flashGreen = green;
 byte flashBlue = blue;
 byte flashBrightness = brightness;
-
-
 
 /********************************** GLOBALS for EFFECTS ******************************/
 //RAINBOW
@@ -381,11 +368,12 @@ bool processJson(char* message) {
       green = root["color"]["g"];
       blue = root["color"]["b"];
     }
+
     
     if (root.containsKey("color_temp")) {
       //temp comes in as mireds, need to convert to kelvin then to RGB
       int color_temp = root["color_temp"];
-      unsigned int kelvin  = MILLION / color_temp;
+      unsigned int kelvin  = 1000000 / color_temp;
       
       temp2rgb(kelvin);
       
@@ -448,7 +436,14 @@ void reconnect() {
     if (client.connect(SENSORNAME, mqtt_username, mqtt_password)) {
       Serial.println("connected");
       client.subscribe(light_set_topic);
+      //setColor(255, 0, 0);
+      if(startup)
+      {
+      setColor(0,100,0);
+      delay(300);
+      startup = true;
       setColor(0, 0, 0);
+      }
       sendState();
     } else {
       Serial.print("failed, rc=");
@@ -879,7 +874,7 @@ void loop() {
     if (now - lastLoop > transitionTime) {
       if (loopCount <= 1020) {
         lastLoop = now;
-
+        Serial.println("loopban");
         redVal = calculateVal(stepR, redVal, loopCount);
         grnVal = calculateVal(stepG, grnVal, loopCount);
         bluVal = calculateVal(stepB, bluVal, loopCount);
@@ -1046,8 +1041,8 @@ void showleds() {
     FastLED.setBrightness(brightness);  //EXECUTE EFFECT COLOR
     FastLED.show();
     if (transitionTime > 0 && transitionTime < 130) {  //Sets animation speed based on receieved value
-      FastLED.delay(1000 / transitionTime);
-      //delay(10*transitionTime);
+      //FastLED.delay(1000 / transitionTime);
+      delay(1*transitionTime);
     }
   }
   else if (startFade) {
